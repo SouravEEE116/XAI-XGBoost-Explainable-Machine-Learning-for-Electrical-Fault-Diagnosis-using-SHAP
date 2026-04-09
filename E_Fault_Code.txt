@@ -1,0 +1,1319 @@
+# ==============================
+# STEP 0: IMPORT LIBRARIES
+# ==============================
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import shap
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_curve, auc
+from sklearn.decomposition import PCA
+
+# ML Models
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, GradientBoostingClassifier, AdaBoostClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+from catboost import CatBoostClassifier
+
+sns.set(style='whitegrid', palette='muted', font_scale=1.2)
+
+
+
+
+# STEP 1: LOAD DATASET
+
+class_df = pd.read_csv(
+    "/kaggle/input/electrical-fault-detection-and-classification/classData.csv"
+)
+
+detect_df = pd.read_csv(
+    "/kaggle/input/electrical-fault-detection-and-classification/detect_dataset.csv"
+)
+
+# Drop unnamed columns
+detect_df.drop(columns=[c for c in detect_df.columns if "Unnamed" in c], inplace=True)
+
+
+
+
+# STEP 2: MERGE DATA & PREPROCESS
+
+signal_cols = ['Ia', 'Ib', 'Ic', 'Va', 'Vb', 'Vc']
+
+# Drop rows with missing values in target or signals
+detect_df = detect_df.dropna(subset=['Output (S)'] + signal_cols)
+
+# Merge class labels with detect dataset on signal columns
+merged_df = pd.merge(class_df, detect_df, on=signal_cols, how='inner')
+print("Merged Data Shape:", merged_df.shape)
+
+
+# True if any missing value exists in the dataset
+merged_df.isnull().values.any()
+
+# Count missing values for each column
+merged_df.isnull().sum()
+
+
+# CREATE FINAL DATAFRAME FOR VISUALIZATION
+final_df = detect_df.copy()
+
+print(final_df.columns.tolist())
+
+
+
+
+# STEP 3: FEATURE DISTRIBUTION VISUALIZATION (3 FEATURES PER ROW)
+
+# Global high-quality settings
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+sns.set_style("whitegrid")
+
+features = ['Ia', 'Ib', 'Ic', 'Va', 'Vb', 'Vc']
+
+cols = 3  # 3 features per row
+rows = int(np.ceil(len(features) / cols))  # automatically calculate rows
+
+plt.figure(figsize=(18, 5 * rows), dpi=600)  
+
+for i, feature in enumerate(features):
+    plt.subplot(rows, cols, i + 1)
+    sns.histplot(
+        final_df[feature],
+        bins=30,
+        kde=True,
+        color='skyblue',
+        edgecolor='black'
+    )
+    plt.title(f'Distribution of {feature}', fontsize=12)
+    plt.xlabel(feature, fontsize=11)
+    plt.ylabel('Count', fontsize=11)
+
+plt.tight_layout()
+
+# Save high-quality PNG
+plt.savefig('feature_distribution_q1.png', dpi=600, bbox_inches='tight')
+
+plt.show()
+
+
+
+
+
+from sklearn.ensemble import IsolationForest
+
+# STEP 4 METHOD: ISOLATION FOREST
+
+iso = IsolationForest(
+    n_estimators=200,
+    contamination=0.03,   # 3% assumed outliers (standard)
+    random_state=42
+)
+
+outlier_labels = iso.fit_predict(merged_df[signal_cols])
+
+# Keep only inliers
+iforest_df = merged_df[outlier_labels == 1]
+
+print("After Isolation Forest Shape:", iforest_df.shape)
+
+final_df = iforest_df.copy()
+
+# STEP: BOXPLOT BEFORE AND AFTER OUTLIER REMOVAL
+
+# Global high-quality settings
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+sns.set_style("whitegrid")
+
+# Before Outlier Removal
+plt.figure(figsize=(14, 6), dpi=600)
+sns.boxplot(data=merged_df[signal_cols])
+plt.title("Before Outlier Removal", fontsize=12)
+plt.xlabel("Signal Features", fontsize=11)
+plt.ylabel("Value", fontsize=11)
+plt.tight_layout()
+plt.savefig('boxplot_before_outlier_removal.png', dpi=600, bbox_inches='tight')
+plt.show()
+
+# After Outlier Removal
+plt.figure(figsize=(14, 6), dpi=600)
+sns.boxplot(data=final_df[signal_cols])
+plt.title("After Outlier Removal (Isolation Forest)", fontsize=12)
+plt.xlabel("Signal Features", fontsize=11)
+plt.ylabel("Value", fontsize=11)
+plt.tight_layout()
+plt.savefig('boxplot_after_outlier_removal.png', dpi=600, bbox_inches='tight')
+plt.show()
+
+
+
+
+# STEP 5: PCA Visualization with Highlighted Outliers
+
+from sklearn.decomposition import PCA
+from sklearn.ensemble import IsolationForest
+
+# Global high-quality settings
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+
+features = ['Ia', 'Ib', 'Ic', 'Va', 'Vb', 'Vc']
+
+# 1️⃣ PCA on original dataset
+pca = PCA(n_components=2)
+pca_orig = pca.fit_transform(merged_df[features])
+
+# 2️⃣ Create labels for outliers
+iso = IsolationForest(
+    n_estimators=200,
+    contamination=0.03,
+    random_state=42
+)
+outlier_labels = iso.fit_predict(merged_df[features])  # 1=inlier, -1=outlier
+
+# 3️⃣ Split for plotting
+inliers_idx = outlier_labels == 1
+outliers_idx = outlier_labels == -1
+
+# 4️⃣ PCA on cleaned dataset
+pca_clean = pca.fit_transform(final_df[features])
+
+# ----------- PLOT -----------
+plt.figure(figsize=(14, 6), dpi=600)
+
+# Original dataset with highlighted outliers
+plt.subplot(1, 2, 1)
+plt.scatter(
+    pca_orig[inliers_idx, 0],
+    pca_orig[inliers_idx, 1],
+    c='blue',
+    label='Inliers',
+    alpha=0.6
+)
+plt.scatter(
+    pca_orig[outliers_idx, 0],
+    pca_orig[outliers_idx, 1],
+    c='red',
+    label='Outliers',
+    alpha=0.8
+)
+plt.title("PCA 2D - Before Outlier Removal", fontsize=12)
+plt.xlabel("PC1", fontsize=11)
+plt.ylabel("PC2", fontsize=11)
+plt.legend()
+
+# Cleaned dataset
+plt.subplot(1, 2, 2)
+plt.scatter(
+    pca_clean[:, 0],
+    pca_clean[:, 1],
+    c='green',
+    label='Inliers',
+    alpha=0.6
+)
+plt.title("PCA 2D - After Outlier Removal", fontsize=12)
+plt.xlabel("PC1", fontsize=11)
+plt.ylabel("PC2", fontsize=11)
+plt.legend()
+plt.tight_layout()
+
+# Save high-quality PNG
+plt.savefig('pca_outlier_visualization_q1.png', dpi=600, bbox_inches='tight')
+plt.show()
+
+
+
+
+
+# CORRELATION HEATMAP (REDS COLORMAP + MANUAL VALUES)
+
+# Global high-quality settings
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+
+features_to_plot = signal_cols   # or your selected features
+
+corr_matrix = final_df[features_to_plot].corr().values
+labels = features_to_plot
+
+fig, ax = plt.subplots(figsize=(8, 6), dpi=600)
+
+# Reds colormap with proper scaling
+im = ax.imshow(
+    corr_matrix,
+    cmap='Reds',
+    vmin=-1,
+    vmax=1
+)
+
+# Axis ticks
+ax.set_xticks(np.arange(len(labels)))
+ax.set_yticks(np.arange(len(labels)))
+ax.set_xticklabels(labels)
+ax.set_yticklabels(labels)
+
+plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+
+# Manual annotation
+for i in range(len(labels)):
+    for j in range(len(labels)):
+        ax.text(
+            j,
+            i,
+            f"{corr_matrix[i, j]:.2f}",
+            ha="center",
+            va="center",
+            color="black",
+            fontsize=10
+        )
+
+# Title & colorbar
+ax.set_title("Feature Correlation Matrix", fontsize=14, pad=15)
+cbar = fig.colorbar(im, shrink=0.8)
+cbar.ax.tick_params(labelsize=10)
+
+plt.tight_layout()
+
+# Save high-quality PNG
+plt.savefig('correlation_heatmap_q1.png', dpi=600, bbox_inches='tight')
+
+plt.show()
+
+
+
+
+
+
+# PAIRWISE RELATIONSHIP PLOT (Pairplot) 
+
+# Global high-quality settings
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+sns.set_style("whitegrid")
+
+# Create pairplot
+pair_plot = sns.pairplot(
+    final_df[signal_cols],
+    diag_kind="kde",
+    corner=True
+)
+
+# Add super title
+pair_plot.fig.suptitle(
+    "Pairwise Relationship of Electrical Signals",
+    fontsize=14,
+    y=1.02
+)
+
+# Tight layout
+pair_plot.fig.tight_layout()
+
+# Save high-quality PNG
+pair_plot.fig.savefig('pairwise_relationship_signals_q1.png', dpi=600, bbox_inches='tight')
+
+# Show the plot
+plt.show()
+
+
+
+
+# FEATURE DISTRIBUTION (AFTER OUTLIER REMOVAL)
+
+# Global high-quality settings
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+sns.set_style("whitegrid")
+
+features = ['Ia', 'Ib', 'Ic', 'Va', 'Vb', 'Vc']
+
+cols = 3  # 3 features per row
+rows = int(np.ceil(len(features) / cols))  # automatically calculate rows
+
+plt.figure(figsize=(18, 5 * rows), dpi=600)
+
+for i, feature in enumerate(features):
+    plt.subplot(rows, cols, i + 1)
+    sns.histplot(
+        final_df[feature],
+        bins=30,
+        kde=True,
+        color='skyblue',
+        edgecolor='black'
+    )
+    plt.title(f'Distribution of {feature} (After Outlier Removal)', fontsize=14)
+    plt.xlabel(feature, fontsize=11)
+    plt.ylabel('Count', fontsize=11)
+
+plt.tight_layout()
+
+# Save high-quality PNG for Q1 journal
+plt.savefig('feature_distribution_after_outlier_removal_q1.png', dpi=600, bbox_inches='tight')
+
+plt.show()
+
+
+
+
+
+# STEP 7: FEATURE ENGINEERING
+
+def extract_features(df):
+    df_new = df.copy()
+    
+    # RMS
+    df_new['I_rms'] = np.sqrt((df['Ia']**2 + df['Ib']**2 + df['Ic']**2)/3)
+    df_new['V_rms'] = np.sqrt((df['Va']**2 + df['Vb']**2 + df['Vc']**2)/3)
+
+    # Mean
+    df_new['I_mean'] = df[['Ia','Ib','Ic']].mean(axis=1)
+    df_new['V_mean'] = df[['Va','Vb','Vc']].mean(axis=1)
+
+    # Std
+    df_new['I_std'] = df[['Ia','Ib','Ic']].std(axis=1)
+    df_new['V_std'] = df[['Va','Vb','Vc']].std(axis=1)
+
+    # Max
+    df_new['I_max'] = df[['Ia','Ib','Ic']].max(axis=1)
+    df_new['V_max'] = df[['Va','Vb','Vc']].max(axis=1)
+
+    # Min
+    df_new['I_min'] = df[['Ia','Ib','Ic']].min(axis=1)
+    df_new['V_min'] = df[['Va','Vb','Vc']].min(axis=1)
+
+    # Peak to peak
+    df_new['I_ptp'] = df_new['I_max'] - df_new['I_min']
+    df_new['V_ptp'] = df_new['V_max'] - df_new['V_min']
+
+    # Energy
+    df_new['I_energy'] = df['Ia']**2 + df['Ib']**2 + df['Ic']**2
+    df_new['V_energy'] = df['Va']**2 + df['Vb']**2 + df['Vc']**2
+
+    return df_new
+
+final_df = extract_features(iforest_df)
+
+
+
+
+import pandas as pd
+import numpy as np
+from scipy.stats import skew
+
+# List of features
+engineered_features = [
+    'I_rms','V_rms','I_mean','V_mean','I_std','V_std',
+    'I_max','V_max','I_min','V_min','I_ptp','V_ptp',
+    'I_energy','V_energy'
+]
+
+# Create summary table
+summary_list = []
+
+for col in engineered_features:
+    data = final_df[col]
+    summary_list.append({
+        "Attribute": col,
+        "Distinct": data.nunique(),
+        "Mean": data.mean(),
+        "Min": data.min(),
+        "Max": data.max(),
+        "Std": data.std(),
+        "Var": data.var(),
+        "Skew": skew(data),
+        "K-Missing": data.isna().sum(),
+        "Zeros": (data == 0).sum()
+    })
+
+# Convert to DataFrame
+feature_summary = pd.DataFrame(summary_list)
+
+# Round numeric values for better readability
+feature_summary.iloc[:, 1:] = feature_summary.iloc[:, 1:].round(4)
+
+# Display
+print("Engineered Features Summary Table:\n")
+display(feature_summary)
+
+
+
+
+# STEP 8: FAULT LABELING
+
+def label_fault_type(row):
+    G, C, B, A = row['G'], row['C'], row['B'], row['A']
+    if G==0 and C==0 and B==0 and A==0:
+        return 'No Fault'
+    if G==1 and C==0 and B==0 and A==1:
+        return 'LG'
+    if G==0 and C==1 and B==1 and A==0:
+        return 'LL'
+    if G==1 and C==0 and B==1 and A==1:
+        return 'LLG'
+    if G==0 and C==1 and B==1 and A==1:
+        return 'LLL'
+    if G==1 and C==1 and B==1 and A==1:
+        return 'GLLL'
+    return 'Unknown'
+
+final_df['Fault Type'] = final_df.apply(label_fault_type, axis=1)
+
+
+
+
+# STEP 9: TRAIN-TEST SPLIT + SMOTE
+
+from imblearn.over_sampling import SMOTE
+
+features = [
+    'Ia','Ib','Ic','Va','Vb','Vc',
+    'I_rms','V_rms','I_mean','V_mean','I_std','V_std',
+    'I_max','V_max','I_min','V_min','I_ptp','V_ptp','I_energy','V_energy'
+]
+
+X = final_df[features]
+y = final_df['Fault Type']
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+
+# SMOTE on training set only
+smote = SMOTE(random_state=42)
+X_train_smote, y_train_smote = smote.fit_resample(X_train, y_train)
+
+print("Total test samples:", X_test.shape[0])
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Global high-quality settings
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+sns.set(style="whitegrid", font_scale=1.2)
+
+# TRAINING SET CLASS DISTRIBUTION BEFORE SMOTE
+train_counts = y_train.value_counts()
+print("Training Set Class Distribution (Before SMOTE):\n", train_counts)
+
+plt.figure(figsize=(8,5), dpi=600)
+sns.countplot(
+    x=y_train,
+    order=train_counts.index,
+    palette='Set2',    # Q1 journal friendly color
+    edgecolor='black'
+)
+plt.title("Training Set Class Distribution Before SMOTE", fontsize=14)
+plt.xlabel("Fault Type", fontsize=11)
+plt.ylabel("Number of Samples", fontsize=11)
+plt.tight_layout()
+
+# Save high-quality PNG
+plt.savefig('train_class_distribution_before_smote_q1.png', dpi=600, bbox_inches='tight')
+
+plt.show()
+
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Global high-quality settings
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+sns.set(style="whitegrid", font_scale=1.2)
+
+# TRAINING SET CLASS DISTRIBUTION AFTER SMOTE
+y_train_smote_series = pd.Series(y_train_smote, name='Fault Type')
+smote_counts = y_train_smote_series.value_counts()
+print("Training Set Class Distribution After SMOTE:\n", smote_counts)
+
+plt.figure(figsize=(8,5), dpi=600)
+sns.countplot(
+    x=y_train_smote_series,
+    order=smote_counts.index,
+    palette='Set3',
+    edgecolor='black'
+)
+plt.title("Training Set Class Distribution After SMOTE", fontsize=14)
+plt.xlabel("Fault Type", fontsize=11)
+plt.ylabel("Number of Samples", fontsize=11)
+plt.tight_layout()
+
+# Save high-quality PNG
+plt.savefig('train_class_distribution_after_smote_q1.png', dpi=600, bbox_inches='tight')
+
+plt.show()
+
+
+
+
+# STEP 10: LABEL ENCODING
+le = LabelEncoder()
+y_train_enc = le.fit_transform(y_train_smote)
+y_test_enc  = le.transform(y_test)
+class_names = le.classes_
+
+
+
+# STEP 11: SCALING
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train_smote)
+X_test_scaled  = scaler.transform(X_test)
+
+
+
+
+# STEP 12: DEFINE MODELS
+
+models = {
+    "Logistic Regression": LogisticRegression(max_iter=5000),
+    "KNN": KNeighborsClassifier(n_neighbors=3, weights='distance'),
+    "SVM": SVC(kernel='rbf', C=100, probability=True, random_state=42),
+    "Decision Tree": DecisionTreeClassifier(random_state=42),
+    "Random Forest": RandomForestClassifier(n_estimators=500, random_state=42),
+    "Extra Trees": ExtraTreesClassifier(n_estimators=1000, random_state=42),
+    "Gradient Boosting": GradientBoostingClassifier(n_estimators=300),
+    "AdaBoost": AdaBoostClassifier(n_estimators=300),
+    "XGBoost": XGBClassifier(n_estimators=500, max_depth=8, learning_rate=0.03, subsample=1, colsample_bytree=1, eval_metric='mlogloss', use_label_encoder=False, random_state=42),
+    "LightGBM": LGBMClassifier(n_estimators=500),
+    "CatBoost": CatBoostClassifier(iterations=500, depth=8, verbose=0)
+}
+
+
+
+
+# STEP 13: CROSS-VALIDATION
+
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+
+print("\nPerforming 5-Fold Cross Validation...\n")
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+cv_results = []
+
+for name, model in models.items():
+
+    if name in ["Logistic Regression", "KNN", "SVM"]:
+        scores = cross_val_score(model, X_train_scaled, y_train_enc, cv=cv, scoring='accuracy')
+    else:
+        scores = cross_val_score(model, X_train_smote, y_train_enc, cv=cv, scoring='accuracy')
+
+    mean_score = scores.mean()*100
+
+    print(f"{name}: Mean CV Accuracy = {mean_score:.2f}%")
+
+    cv_results.append([name, mean_score])
+
+cv_results_df = pd.DataFrame(cv_results, columns=["Model", "CV Accuracy (%)"])
+display(cv_results_df)
+
+
+
+# STEP 13: TRAINING
+
+results = []
+trained_models = {}
+
+for name, model in models.items():
+    print("\nTraining:", name)
+    
+    # Scale for these models only
+    if name in ["Logistic Regression", "KNN", "SVM"]:
+        model.fit(X_train_scaled, y_train_enc)
+        y_pred = model.predict(X_test_scaled)
+    else:
+        model.fit(X_train_smote, y_train_enc)
+        y_pred = model.predict(X_test)
+        
+    acc = accuracy_score(y_test_enc, y_pred)
+    print("Accuracy:", round(acc*100,2), "%")
+    
+    results.append([name, acc])
+    trained_models[name] = model
+
+
+
+
+# STEP 14: RESULTS TABLE
+
+results_df = pd.DataFrame(results, columns=["Model","Accuracy"])
+results_df = results_df.sort_values(by="Accuracy", ascending=False)
+print("\nFINAL MODEL COMPARISON:")
+print(results_df)
+
+
+
+from sklearn.preprocessing import LabelEncoder, label_binarize
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, log_loss, matthews_corrcoef
+
+# Encode string labels to numeric for training
+
+le = LabelEncoder()
+y_train_enc = le.fit_transform(y_train_smote)
+y_test_enc = le.transform(y_test)
+
+# Binarize for AUC
+y_test_bin = label_binarize(y_test_enc, classes=np.arange(len(le.classes_)))
+
+# Train all models on numeric labels (already done)
+
+# Make sure you trained models on y_train_enc, not string labels
+
+# Evaluate models
+
+results_list = []
+
+for name, model in trained_models.items():
+    
+    # Prepare test input
+    if name in ["Logistic Regression", "KNN", "SVM"]:
+        X_test_input = scaler.transform(X_test)
+    else:
+        X_test_input = X_test.values
+    
+    # Predict numeric labels (no need to transform)
+    y_pred_enc = model.predict(X_test_input)
+    
+    # Metrics
+    acc = accuracy_score(y_test_enc, y_pred_enc) * 100
+    prec = precision_score(y_test_enc, y_pred_enc, average='macro')*100
+    rec = recall_score(y_test_enc, y_pred_enc, average='macro')*100
+    f1 = f1_score(y_test_enc, y_pred_enc, average='macro')*100
+    
+    # AUC & Log-loss if supported
+    try:
+        y_pred_prob = model.predict_proba(X_test_input)
+        auc = roc_auc_score(y_test_bin, y_pred_prob, average='macro', multi_class='ovr')
+        logloss = log_loss(y_test_enc, y_pred_prob)
+    except:
+        auc = '-'
+        logloss = '-'
+    
+    mcc = matthews_corrcoef(y_test_enc, y_pred_enc)
+    
+    results_list.append({
+        "Model": name,
+        "Accuracy (%)": round(acc,3),
+        "Macro-avg Precision (%)": round(prec,3),
+        "Macro-avg Recall (%)": round(rec,3),
+        "Macro-avg F1-score (%)": round(f1,3),
+        "AUC": auc if auc=='-' else round(auc,3),
+        "Log-loss": logloss if logloss=='-' else round(logloss,3),
+        "MCC": round(mcc,3)
+    })
+
+
+# Results table
+results_df = pd.DataFrame(results_list).sort_values(by="Accuracy (%)", ascending=False).reset_index(drop=True)
+display(results_df)
+
+
+
+
+
+
+# STEP 16: STATISTICAL SIGNIFICANCE TEST
+
+from scipy.stats import ttest_rel
+
+print("\nPerforming Statistical Significance Test...\n")
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+rf_scores = cross_val_score(
+    trained_models["Random Forest"],
+    X_train_smote,
+    y_train_enc,
+    cv=cv
+)
+
+xgb_scores = cross_val_score(
+    trained_models["XGBoost"],
+    X_train_smote,
+    y_train_enc,
+    cv=cv
+)
+
+t_stat, p_value = ttest_rel(rf_scores, xgb_scores)
+
+print("T-Statistic:", t_stat)
+print("P-value:", p_value)
+
+if p_value < 0.05:
+    print("Result is statistically significant (p < 0.05)")
+else:
+    print("Result is NOT statistically significant")
+
+
+
+
+# STEP 17: BEST MODEL REPORT
+
+best_model_name = results_df.iloc[0]["Model"]
+best_model = trained_models[best_model_name]
+
+if best_model_name in ["Logistic Regression","KNN","SVM"]:
+    y_pred_best = best_model.predict(X_test_scaled)
+else:
+    y_pred_best = best_model.predict(X_test)
+
+print("\nBEST MODEL:", best_model_name)
+print(classification_report(y_test_enc, y_pred_best, target_names=class_names))
+
+
+
+
+# STEP 18: FEATURE IMPORTANCE RANKING
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# High-quality settings
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+sns.set(style="whitegrid", font_scale=1.2)
+
+print("\nFeature Importance Ranking (XGBoost):\n")
+
+best_model = trained_models["XGBoost"]
+
+importance = best_model.feature_importances_
+
+importance_df = pd.DataFrame({
+    "Feature": X_train_smote.columns,
+    "Importance": importance
+})
+
+importance_df = importance_df.sort_values(by="Importance", ascending=False)
+
+display(importance_df)
+
+# Plot with original seaborn default colors
+plt.figure(figsize=(10,6), dpi=600)
+sns.barplot(
+    data=importance_df,
+    x="Importance",
+    y="Feature",
+    # palette left empty → seaborn default color sequence (like before)
+    edgecolor='black'
+)
+
+plt.title("Feature Importance Ranking (XGBoost)", fontsize=14)
+plt.xlabel("Importance", fontsize=11)
+plt.ylabel("Feature", fontsize=11)
+plt.tight_layout()
+
+# Save high-quality PNG
+plt.savefig('feature_importance_xgboost_q1_colors_original.png', dpi=600, bbox_inches='tight')
+
+plt.show()
+
+
+
+
+# STEP 19: CONFUSION MATRIX
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+import numpy as np
+
+sns.set_style("whitegrid")
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+
+# Define fault mapping
+fault_mapping = {
+    0: 'No Fault',
+    1: 'LG',
+    2: 'LL',
+    3: 'LLG',
+    4: 'LLL',
+    5: 'GLLL'
+}
+
+# Subfigure letters (a)–(k)
+subletters = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)', '(g)', '(h)', '(i)', '(j)', '(k)']
+
+# List of models in desired order
+model_order = [
+    "XGBoost",
+    "CatBoost",
+    "LightGBM",
+    "Gradient Boosting",
+    "Random Forest",
+    "Decision Tree",
+    "Extra Trees",
+    "SVM",
+    "KNN",
+    "Logistic Regression",
+    "AdaBoost"
+]
+
+# Loop through each trained model in order
+for idx, name in enumerate(model_order):
+    model = trained_models[name]
+    
+    # Predict
+    if name in ["Logistic Regression", "KNN", "SVM"]:
+        y_pred = model.predict(X_test_scaled)
+    else:
+        y_pred = model.predict(X_test)
+    
+    # Compute confusion matrix
+    cm = confusion_matrix(y_test_enc, y_pred)
+    
+    # Create figure
+    plt.figure(figsize=(8,6), dpi=600)
+    
+    # Plot heatmap (Blues colormap)
+    ax = sns.heatmap(
+        cm,
+        annot=False,
+        cmap='Blues',
+        cbar=True,
+        linewidths=0.5,
+        linecolor='gray',
+        xticklabels=[fault_mapping[i] for i in range(cm.shape[1])],
+        yticklabels=[fault_mapping[i] for i in range(cm.shape[0])]
+    )
+    
+    # Add numeric values manually
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(
+                j + 0.5, i + 0.5,
+                str(cm[i, j]),
+                ha='center',
+                va='center',
+                color='black',
+                fontsize=12,
+                fontweight='bold'
+            )
+    
+    # Title with subfigure letter
+    plt.title(f"{subletters[idx]} {name} - Confusion Matrix", fontsize=14, fontweight='bold')
+    plt.xlabel("Predicted Fault Type", fontsize=12)
+    plt.ylabel("True Fault Type", fontsize=12)
+    
+    plt.tight_layout()
+    
+    # Save each confusion matrix separately
+    filename = f'confusion_matrix_{name.replace(" ", "_").lower()}_q1.png'
+    plt.savefig(filename, dpi=600, bbox_inches='tight')
+    
+    plt.show()
+
+
+
+# STEP 19: ROC
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve, auc
+from sklearn.preprocessing import label_binarize
+
+print("\nGenerating Multi-class ROC Curve...\n")
+
+# Number of classes
+n_classes = len(class_names)
+
+# Binarize test labels
+y_test_bin = label_binarize(y_test_enc, classes=np.arange(n_classes))
+
+# Select BEST MODEL (example: XGBoost)
+best_model_name = "XGBoost"
+model = trained_models[best_model_name]
+
+# Select correct input
+if best_model_name in ["Logistic Regression", "KNN", "SVM"]:
+    X_test_input = X_test_scaled
+else:
+    X_test_input = X_test.values
+
+# Predict probabilities
+y_score = model.predict_proba(X_test_input)
+
+# Compute ROC curve and AUC for each class
+fpr = dict()
+tpr = dict()
+roc_auc = dict()
+
+# High-quality figure settings
+plt.figure(figsize=(10,7), dpi=600)
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+
+colors = plt.get_cmap('tab10').colors  # professional distinct colors
+
+for i in range(n_classes):
+    fpr[i], tpr[i], _ = roc_curve(y_test_bin[:, i], y_score[:, i])
+    roc_auc[i] = auc(fpr[i], tpr[i])
+    
+    plt.plot(
+        fpr[i],
+        tpr[i],
+        color=colors[i % len(colors)],
+        linewidth=2,
+        label=f"{class_names[i]} (AUC = {roc_auc[i]:.3f})"
+    )
+
+# Diagonal line for random classifier
+plt.plot([0,1], [0,1], 'k--', linewidth=2)
+
+plt.title(f"Multi-Class ROC Curve ({best_model_name})", fontsize=14, fontweight='bold')
+plt.xlabel("False Positive Rate", fontsize=12)
+plt.ylabel("True Positive Rate", fontsize=12)
+
+plt.legend(loc="lower right", fontsize=11)
+plt.grid(True)
+plt.tight_layout()
+
+# Save high-quality PNG
+plt.savefig(f'multi_class_roc_{best_model_name.lower()}_q1.png', dpi=600, bbox_inches='tight')
+
+plt.show()
+
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import auc
+
+# Aggregate all FPR points
+all_fpr = np.unique(np.concatenate([fpr[i] for i in range(n_classes)]))
+
+# Interpolate all ROC curves at these points
+mean_tpr = np.zeros_like(all_fpr)
+
+for i in range(n_classes):
+    mean_tpr += np.interp(all_fpr, fpr[i], tpr[i])
+
+# Average it
+mean_tpr /= n_classes
+
+# Compute macro AUC
+macro_auc = auc(all_fpr, mean_tpr)
+
+# High-quality plotting settings
+plt.figure(figsize=(8,6), dpi=600)
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+
+# Plot macro ROC
+plt.plot(
+    all_fpr,
+    mean_tpr,
+    color='darkorange',
+    linewidth=3,
+    label=f"Macro-average ROC (AUC = {macro_auc:.3f})"
+)
+
+# Diagonal line for random classifier
+plt.plot([0,1], [0,1], 'k--', linewidth=2)
+
+plt.title("Macro-Average ROC Curve", fontsize=14, fontweight='bold')
+plt.xlabel("False Positive Rate", fontsize=12)
+plt.ylabel("True Positive Rate", fontsize=12)
+plt.legend(loc="lower right", fontsize=11)
+plt.grid(True)
+plt.tight_layout()
+
+# Save high-quality PNG
+plt.savefig('macro_average_roc_q1.png', dpi=600, bbox_inches='tight')
+
+plt.show()
+
+
+
+
+
+
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve, auc
+import numpy as np
+
+plt.figure(figsize=(10,7), dpi=600)
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+
+colors = plt.get_cmap('tab10').colors  # distinct color palette
+color_idx = 0
+
+for name, model in trained_models.items():
+    try:
+        # Select correct input
+        if name in ["Logistic Regression", "KNN", "SVM"]:
+            X_input = X_test_scaled
+        else:
+            X_input = X_test.values
+
+        # Predict probabilities
+        y_score = model.predict_proba(X_input)
+
+        # Flatten for multi-class comparison
+        fpr, tpr, _ = roc_curve(y_test_bin.ravel(), y_score.ravel())
+        roc_auc = auc(fpr, tpr)
+
+        # Plot ROC line with distinct color
+        plt.plot(
+            fpr,
+            tpr,
+            color=colors[color_idx % len(colors)],
+            linewidth=2,
+            label=f"{name} (AUC = {roc_auc:.3f})"
+        )
+
+        color_idx += 1
+
+    except:
+        continue
+
+# Random classifier line
+plt.plot([0,1],[0,1],'k--', linewidth=2)
+
+# Labels and title
+plt.title("ROC Curve Comparison of All Models", fontsize=14, fontweight='bold')
+plt.xlabel("False Positive Rate", fontsize=12)
+plt.ylabel("True Positive Rate", fontsize=12)
+
+plt.legend(loc="lower right", fontsize=10)
+plt.grid(True)
+plt.tight_layout()
+
+# Save high-quality PNG
+plt.savefig('roc_comparison_all_models_q1.png', dpi=600, bbox_inches='tight')
+
+plt.show()
+
+
+
+
+
+# STEP 20: SHAP EXPLAINABILITY
+import shap
+import matplotlib.pyplot as plt
+
+print("✅ Starting SHAP Explainability for Best Model: XGBoost")
+
+# --- Best model ---
+best_model = trained_models["XGBoost"]
+
+# --- Sample 100 test data for faster SHAP computation ---
+X_sample = X_test.sample(100, random_state=42)
+
+# --- TreeExplainer ---
+explainer = shap.TreeExplainer(best_model)
+shap_values = explainer.shap_values(X_sample)
+
+# High-quality plot settings
+plt.rcParams['figure.dpi'] = 600
+plt.rcParams['savefig.dpi'] = 600
+plt.rcParams['font.size'] = 11
+
+# ==============================
+# 1. SHAP Summary Plot (Beeswarm)
+# ==============================
+plt.figure(figsize=(10,6), dpi=600)
+shap.summary_plot(shap_values, X_sample, show=False)
+plt.title("SHAP Summary Plot - XGBoost Model", fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.savefig('shap_summary_beeswarm_xgboost_q1.png', dpi=600, bbox_inches='tight')
+plt.show()
+
+# ==============================
+# 2. SHAP Feature Importance (Bar Plot)
+# ==============================
+plt.figure(figsize=(10,6), dpi=600)
+shap.summary_plot(shap_values, X_sample, plot_type="bar", show=False)
+plt.title("SHAP Feature Importance - XGBoost Model", fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.savefig('shap_feature_importance_bar_xgboost_q1.png', dpi=600, bbox_inches='tight')
+plt.show()
+
+# ==============================
+# 3. SHAP Force Plot (Optional Interactive, Single Sample)
+# ==============================
+shap.initjs()
+sample_index = 0
+class_index = 0  # Explain first class (e.g., "GLLL")
+
+force_plot = shap.force_plot(
+    explainer.expected_value[class_index],
+    shap_values[class_index][sample_index],
+    X_sample.iloc[sample_index]
+)
+
+force_plot  # Interactive in Jupyter; not saved as static PNG
+
+
+
+#STEP 20: FAULT PREDICTION
+import numpy as np
+
+def compute_stat_features(Ia, Ib, Ic, Va, Vb, Vc):
+    """
+    Compute the derived features for XGBoost from raw 6 input values
+    """
+    I = np.array([Ia, Ib, Ic], dtype=float)
+    V = np.array([Va, Vb, Vc], dtype=float)
+    
+    features = {
+        'Ia': Ia, 'Ib': Ib, 'Ic': Ic, 'Va': Va, 'Vb': Vb, 'Vc': Vc,
+        'I_rms': np.sqrt(np.mean(I**2)),
+        'V_rms': np.sqrt(np.mean(V**2)),
+        'I_mean': np.mean(I),
+        'V_mean': np.mean(V),
+        'I_std': np.std(I),
+        'V_std': np.std(V),
+        'I_max': np.max(I),
+        'V_max': np.max(V),
+        'I_min': np.min(I),
+        'V_min': np.min(V),
+        'I_ptp': np.ptp(I),
+        'V_ptp': np.ptp(V),
+        'I_energy': np.sum(I**2),
+        'V_energy': np.sum(V**2)
+    }
+    
+    # Return as single-row DataFrame
+    import pandas as pd
+    return pd.DataFrame([features])
+
+# --- 6 Input Example ---
+Ia, Ib, Ic = -336.18, -76.28, 18.32
+Va, Vb, Vc = 0.3127, -0.1236, -0.1891
+
+# Compute all 20 features
+X_input = compute_stat_features(Ia, Ib, Ic, Va, Vb, Vc)
+
+# --- Prediction using trained XGBoost ---
+pred_class_index = np.argmax(best_model.predict_proba(X_input)[0])
+
+# --- Convert class index to 4-bit vector & fault type ---
+def index_to_label_vector(idx):
+    return [(idx >> i) & 1 for i in reversed(range(4))]
+
+def decode_fault_type_from_index(idx):
+    mapping = {
+        0: "No Fault", 8: "Ground Fault", 1: "Fault in Line A",
+        2: "Fault in Line B", 4: "Fault in Line C", 9: "LG fault (A-G)",
+        10: "LG fault (B-G)", 12: "LG fault (C-G)", 3: "LL fault (B-A)",
+        6: "LL fault (C-B)", 5: "LL fault (C-A)", 11: "LLG Fault (A,B-G)",
+        13: "LLG Fault (A,C-G)", 14: "LLG Fault (C,B-G)", 7: "LLL Fault (ABC)",
+        15: "LLLG Fault (ABC-G)"
+    }
+    return mapping.get(idx, "Unknown Fault")
+
+predicted_output = index_to_label_vector(pred_class_index)
+fault_type = decode_fault_type_from_index(pred_class_index)
+
+# --- Display ---
+print("Input (Ia, Ib, Ic, Va, Vb, Vc):", [Ia, Ib, Ic, Va, Vb, Vc])
+print("Predicted G-C-B-A Output:", predicted_output)
+print("Predicted Fault Type:", fault_type)
+
+
+
+
+# STEP 21: Sample Prediction Table with 6 Inputs → 4-bit vector + Fault Type
+
+import numpy as np
+import pandas as pd
+
+# --- 1. Function to compute derived features ---
+def compute_stat_features(Ia, Ib, Ic, Va, Vb, Vc):
+    I = np.array([Ia, Ib, Ic], dtype=float)
+    V = np.array([Va, Vb, Vc], dtype=float)
+    features = {
+        'Ia': Ia, 'Ib': Ib, 'Ic': Ic, 'Va': Va, 'Vb': Vb, 'Vc': Vc,
+        'I_rms': np.sqrt(np.mean(I**2)),
+        'V_rms': np.sqrt(np.mean(V**2)),
+        'I_mean': np.mean(I),
+        'V_mean': np.mean(V),
+        'I_std': np.std(I),
+        'V_std': np.std(V),
+        'I_max': np.max(I),
+        'V_max': np.max(V),
+        'I_min': np.min(I),
+        'V_min': np.min(V),
+        'I_ptp': np.ptp(I),
+        'V_ptp': np.ptp(V),
+        'I_energy': np.sum(I**2),
+        'V_energy': np.sum(V**2)
+    }
+    return pd.DataFrame([features])
+
+# --- 2. Function to convert class index → 4-bit vector ---
+def index_to_label_vector(idx):
+    return [(idx >> i) & 1 for i in reversed(range(4))]
+
+# --- 3. Function to decode class index → fault type ---
+def decode_fault_type_from_index(idx):
+    mapping = {
+        0: "No Fault", 8: "Ground Fault", 1: "Fault in Line A",
+        2: "Fault in Line B", 4: "Fault in Line C", 9: "LG fault (A-G)",
+        10: "LG fault (B-G)", 12: "LG fault (C-G)", 3: "LL fault (B-A)",
+        6: "LL fault (C-B)", 5: "LL fault (C-A)", 11: "LLG Fault (A,B-G)",
+        13: "LLG Fault (A,C-G)", 14: "LLG Fault (C,B-G)", 7: "LLL Fault (ABC)",
+        15: "LLLG Fault (ABC-G)"
+    }
+    return mapping.get(idx, "Unknown Fault")
+
+# --- 4. Example 10 input samples (Ia, Ib, Ic, Va, Vb, Vc) ---
+input_samples = [
+    [-336.18, -76.28, 18.32, 0.3127, -0.1236, -0.1891],
+    [120.5, -200.3, 50.1, 0.1, -0.05, 0.08],
+    [50.2, 60.1, -20.3, 0.2, 0.3, -0.1],
+    [-10, 0, 10, -0.2, 0.0, 0.2],
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [-100, -100, -100, 0.1, 0.1, 0.1],
+    [200, -50, 0, 0.3, -0.2, 0.1],
+    [30, 40, 50, -0.05, 0.05, -0.05],
+    [-60, 20, 40, 0.2, -0.1, 0.0],
+    [15, -15, 30, 0.1, 0.0, -0.1]
+]
+
+# --- 5. Predict and create table ---
+results = []
+
+for sample in input_samples:
+    X_input = compute_stat_features(*sample)          # compute 20 features
+    pred_class_index = np.argmax(best_model.predict_proba(X_input)[0])
+    vector_4bit = index_to_label_vector(pred_class_index)
+    fault_type = decode_fault_type_from_index(pred_class_index)
+    
+    results.append(sample + [vector_4bit, fault_type])
+
+# --- 6. Convert to DataFrame ---
+columns = ['Ia','Ib','Ic','Va','Vb','Vc','G-C-B-A Vector','Predicted Fault']
+pred_table = pd.DataFrame(results, columns=columns)
+
+# --- 7. Display table ---
+pred_table
+
